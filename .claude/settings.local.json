@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(npm uninstall *)",
+      "Bash(npm install *)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs",
+      "WebFetch(domain:openrouter.ai)",
+      "WebFetch(domain:replicate.com)",
+      "WebFetch(domain:api.together.ai)",
+      "WebFetch(domain:www.anthropic.com)",
+      "WebFetch(domain:docs.together.ai)",
+      "WebFetch(domain:api.bfl.ml)",
+      "Bash(node *)",
+      "Bash(python3 *)"
+    ]
+  }
+}
