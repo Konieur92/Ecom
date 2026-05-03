@@ -155,6 +155,30 @@ app.post('/api/mannequins', async (req, res) => {
     }
 });
 
+app.patch('/api/mannequins/:id', async (req, res) => {
+    try {
+        const { name, frontUrl, backUrl } = req.body;
+        const fields = [];
+        const values = [];
+        let idx = 1;
+        if (name !== undefined) { fields.push(`name = $${idx++}`); values.push(name); }
+        if (frontUrl !== undefined) { fields.push(`front_url = $${idx++}`); values.push(frontUrl); }
+        if (backUrl !== undefined) { fields.push(`back_url = $${idx++}`); values.push(backUrl); }
+        if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+        values.push(req.params.id);
+        const { rows, rowCount } = await pool.query(
+            `UPDATE mannequins SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, front_url AS "frontUrl", back_url AS "backUrl", created_at AS "createdAt"`,
+            values
+        );
+        if (rowCount === 0) return res.status(404).json({ error: 'Not found' });
+        console.log(`[Mannequins] ✏️ Updated: ${rows[0].name}`);
+        res.json(rows[0]);
+    } catch (err) {
+        console.error('[Mannequins] PATCH error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.delete('/api/mannequins/:id', async (req, res) => {
     try {
         const { rowCount } = await pool.query('DELETE FROM mannequins WHERE id = $1', [req.params.id]);

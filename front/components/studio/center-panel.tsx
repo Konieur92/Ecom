@@ -17,6 +17,7 @@ interface CenterPanelProps {
   savedProducts: SavedProduct[]
   reviewContext: ReviewContext | null
   onOpenSavedProduct: (p: SavedProduct) => void
+  onDeleteProduct: (id: string) => void
   onBatchComplete: (products: QueuedProduct[]) => void
   onOpenEditor: (photo: GeneratedPhoto, productName: string) => void
   onChangeMannequin: () => void
@@ -30,6 +31,7 @@ export function CenterPanel({
   savedProducts,
   reviewContext,
   onOpenSavedProduct,
+  onDeleteProduct,
   onBatchComplete,
   onOpenEditor,
   onChangeMannequin,
@@ -82,7 +84,7 @@ export function CenterPanel({
           />
         )}
         {view === "products" && (
-          <ProductsView products={savedProducts} mannequins={mannequins} onOpen={onOpenSavedProduct} />
+          <ProductsView products={savedProducts} mannequins={mannequins} onOpen={onOpenSavedProduct} onDelete={onDeleteProduct} />
         )}
         {view === "review" && reviewContext && (
           <ReviewView

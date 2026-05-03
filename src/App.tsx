@@ -225,7 +225,7 @@ export default function App() {
                   </Button>
 
                   <p className="text-xs text-center text-neutral-400">
-                    Coût estimé : ~$0.048 par fiche • OpenRouter GPT-5-Image-Mini
+                    Coût estimé : ~$0.048 par fiche • FLUX Kontext
                   </p>
                 </TabsContent>
 

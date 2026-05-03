@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react"
 import Image from "next/image"
-import { Menu, Plus, Trash2, Upload, Sparkles } from "lucide-react"
+import { Menu, Plus, Trash2, Upload, Sparkles, Pencil, Check, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { Mannequin } from "@/lib/studio-types"
 import {
@@ -21,6 +21,7 @@ interface MannequinSidebarProps {
   onToggleCollapse: () => void
   onSelect: (id: string) => void
   onAdd: (m: Mannequin) => void
+  onRename: (id: string, name: string) => void
   onDelete: (id: string) => void
 }
 
@@ -31,6 +32,7 @@ export function MannequinSidebar({
   onToggleCollapse,
   onSelect,
   onAdd,
+  onRename,
   onDelete,
 }: MannequinSidebarProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -82,6 +84,7 @@ export function MannequinSidebar({
             active={m.id === activeId}
             collapsed={collapsed}
             onSelect={() => onSelect(m.id)}
+            onRename={(name) => onRename(m.id, name)}
             onDelete={() => onDelete(m.id)}
           />
         ))}
@@ -129,14 +132,38 @@ function MannequinCard({
   active,
   collapsed,
   onSelect,
+  onRename,
   onDelete,
 }: {
   mannequin: Mannequin
   active: boolean
   collapsed: boolean
   onSelect: () => void
+  onRename: (name: string) => void
   onDelete: () => void
 }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(mannequin.name)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const startEdit = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setDraft(mannequin.name)
+    setEditing(true)
+    setTimeout(() => inputRef.current?.select(), 0)
+  }
+
+  const commitEdit = () => {
+    const trimmed = draft.trim()
+    if (trimmed && trimmed !== mannequin.name) onRename(trimmed)
+    setEditing(false)
+  }
+
+  const cancelEdit = () => {
+    setDraft(mannequin.name)
+    setEditing(false)
+  }
+
   return (
     <div
       className={cn(
@@ -146,10 +173,11 @@ function MannequinCard({
           ? "border-indigo-500/60 shadow-lg shadow-indigo-500/20 ring-1 ring-indigo-500/40"
           : "border-zinc-800/60 hover:border-zinc-700 hover:scale-[1.02]",
       )}
-      onClick={onSelect}
+      onClick={editing ? undefined : onSelect}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
+        if (editing) return
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault()
           onSelect()
@@ -179,8 +207,30 @@ function MannequinCard({
       </div>
 
       {!collapsed && (
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-zinc-100">{mannequin.name}</p>
+        <div className="min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
+          {editing ? (
+            <div className="flex items-center gap-1">
+              <input
+                ref={inputRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitEdit()
+                  if (e.key === "Escape") cancelEdit()
+                }}
+                className="w-full rounded border border-indigo-500/60 bg-zinc-800 px-1.5 py-0.5 text-sm text-zinc-100 focus:outline-none"
+                autoFocus
+              />
+              <button type="button" onClick={commitEdit} className="text-emerald-400 hover:text-emerald-300" aria-label="Valider">
+                <Check className="h-3.5 w-3.5" />
+              </button>
+              <button type="button" onClick={cancelEdit} className="text-zinc-500 hover:text-zinc-300" aria-label="Annuler">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : (
+            <p className="truncate text-sm font-medium text-zinc-100">{mannequin.name}</p>
+          )}
           {active ? (
             <p className="text-[11px] font-medium text-emerald-400">Actif</p>
           ) : (
@@ -189,18 +239,25 @@ function MannequinCard({
         </div>
       )}
 
-      {!collapsed && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-          className="absolute right-2 top-2 hidden h-7 w-7 items-center justify-center rounded-md bg-zinc-800/80 text-zinc-400 hover:bg-rose-500/20 hover:text-rose-400 group-hover:flex"
-          aria-label={`Supprimer ${mannequin.name}`}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+      {!collapsed && !editing && (
+        <div className="absolute right-2 top-2 hidden gap-1 group-hover:flex">
+          <button
+            type="button"
+            onClick={startEdit}
+            className="flex h-7 w-7 items-center justify-center rounded-md bg-zinc-800/80 text-zinc-400 hover:bg-indigo-500/20 hover:text-indigo-400"
+            aria-label={`Renommer ${mannequin.name}`}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onDelete() }}
+            className="flex h-7 w-7 items-center justify-center rounded-md bg-zinc-800/80 text-zinc-400 hover:bg-rose-500/20 hover:text-rose-400"
+            aria-label={`Supprimer ${mannequin.name}`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       )}
     </div>
   )

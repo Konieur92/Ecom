@@ -13,8 +13,10 @@ import {
 import {
   fetchMannequins,
   createMannequin,
+  updateMannequin,
   deleteMannequin as apiDeleteMannequin,
   fetchProducts,
+  deleteProduct as apiDeleteProduct,
 } from "@/lib/api"
 
 export type StudioView = "batch" | "products" | "review"
@@ -65,6 +67,15 @@ export function StudioApp() {
     }
   }, [])
 
+  const handleRenameMannequin = useCallback(async (id: string, name: string) => {
+    try {
+      const updated = await updateMannequin(id, { name })
+      setMannequins((prev) => prev.map((m) => (m.id === id ? updated : m)))
+    } catch (err) {
+      console.error("Failed to rename mannequin:", err)
+    }
+  }, [])
+
   const handleDeleteMannequin = useCallback(
     async (id: string) => {
       try {
@@ -82,6 +93,15 @@ export function StudioApp() {
     },
     [activeMannequinId],
   )
+
+  const handleDeleteProduct = useCallback(async (id: string) => {
+    try {
+      await apiDeleteProduct(id)
+      setSavedProducts((prev) => prev.filter((p) => p.id !== id))
+    } catch (err) {
+      console.error("Failed to delete product:", err)
+    }
+  }, [])
 
   const refreshProducts = useCallback(async () => {
     try {
@@ -141,6 +161,7 @@ export function StudioApp() {
         onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
         onSelect={setActiveMannequinId}
         onAdd={handleAddMannequin}
+        onRename={handleRenameMannequin}
         onDelete={handleDeleteMannequin}
       />
 
@@ -153,6 +174,7 @@ export function StudioApp() {
           savedProducts={savedProducts}
           reviewContext={reviewContext}
           onOpenSavedProduct={(p) => openReview(p, 0)}
+          onDeleteProduct={handleDeleteProduct}
           onBatchComplete={handleBatchComplete}
           onOpenEditor={openEditor}
           onChangeMannequin={() => setSidebarCollapsed(false)}

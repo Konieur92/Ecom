@@ -20,6 +20,16 @@ export async function createMannequin(data: { name: string; frontUrl: string; ba
   return res.json()
 }
 
+export async function updateMannequin(id: string, data: Partial<{ name: string; frontUrl: string; backUrl: string }>): Promise<Mannequin> {
+  const res = await fetch(`${API}/api/mannequins/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error("Failed to update mannequin")
+  return res.json()
+}
+
 export async function deleteMannequin(id: string): Promise<void> {
   const res = await fetch(`${API}/api/mannequins/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete mannequin")

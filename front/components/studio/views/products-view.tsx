@@ -1,16 +1,17 @@
 "use client"
 
 import Image from "next/image"
-import { FolderOpen, ImageIcon, AlertTriangle, CheckCircle2 } from "lucide-react"
+import { FolderOpen, ImageIcon, AlertTriangle, CheckCircle2, Trash2 } from "lucide-react"
 import type { Mannequin, SavedProduct } from "@/lib/studio-types"
 
 interface ProductsViewProps {
   products: SavedProduct[]
   mannequins: Mannequin[]
   onOpen: (p: SavedProduct) => void
+  onDelete: (id: string) => void
 }
 
-export function ProductsView({ products, mannequins, onOpen }: ProductsViewProps) {
+export function ProductsView({ products, mannequins, onOpen, onDelete }: ProductsViewProps) {
   if (products.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
@@ -48,6 +49,7 @@ export function ProductsView({ products, mannequins, onOpen }: ProductsViewProps
               product={product}
               mannequin={mannequins.find((m) => m.id === product.mannequinId)}
               onClick={() => onOpen(product)}
+              onDelete={() => onDelete(product.id)}
             />
           ))}
         </div>
@@ -60,20 +62,31 @@ function ProductFolderCard({
   product,
   mannequin,
   onClick,
+  onDelete,
 }: {
   product: SavedProduct
   mannequin?: Mannequin
   onClick: () => void
+  onDelete: () => void
 }) {
   const isComplete = product.approvedCount === product.totalCount && product.totalCount > 0
   const pendingCount = product.totalCount - product.approvedCount
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group flex flex-col overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/60 backdrop-blur-xl text-left transition-all duration-200 hover:scale-[1.02] hover:border-zinc-700 hover:shadow-2xl hover:shadow-black/50"
-    >
+    <div className="group relative flex flex-col overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/60 backdrop-blur-xl text-left transition-all duration-200 hover:scale-[1.02] hover:border-zinc-700 hover:shadow-2xl hover:shadow-black/50">
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onDelete() }}
+        className="absolute left-3 top-3 z-10 hidden h-7 w-7 items-center justify-center rounded-md bg-zinc-950/80 text-zinc-400 hover:bg-rose-500/20 hover:text-rose-400 group-hover:flex backdrop-blur"
+        aria-label={`Supprimer ${product.name}`}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex flex-1 flex-col"
+      >
       {/* Cover image */}
       <div className="relative aspect-[3/4] w-full overflow-hidden bg-zinc-900">
         {product.coverUrl ? (
@@ -137,6 +150,7 @@ function ProductFolderCard({
           </p>
         </div>
       </div>
-    </button>
+      </button>
+    </div>
   )
 }

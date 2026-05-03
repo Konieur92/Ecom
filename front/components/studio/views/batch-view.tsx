@@ -72,7 +72,7 @@ export function BatchView({ activeMannequin, onChangeMannequin, onBatchComplete 
     setProducts((prev) => prev.filter((p) => p.id !== id))
   }
 
-  const totalCost = products.length * 3 * 0.12
+  const totalCost = products.length * 3 * 0.016
 
   const startGeneration = async () => {
     if (products.length === 0 || isGenerating || !activeMannequin) return
