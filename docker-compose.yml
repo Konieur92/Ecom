@@ -1,12 +1,23 @@
 services:
-  app:
+  backend:
     build: .
     ports:
       - "3001:3001"
     env_file:
       - .env
     environment:
-      - ALLOWED_ORIGIN=*
+      - ALLOWED_ORIGIN=http://localhost:3000
     volumes:
       - ./output:/app/output
+    restart: unless-stopped
+
+  front:
+    build: ./front
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_URL=http://backend:3001
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped

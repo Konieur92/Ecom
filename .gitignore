@@ -24,3 +24,8 @@ service-account.json
 *.njsproj
 *.sln
 *.sw?
+
+# Claude
+claude.ps1
+claude.env
+

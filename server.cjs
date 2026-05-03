@@ -3,6 +3,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { rateLimit } = require('express-rate-limit');
+const { Pool } = require('pg');
 require('dotenv').config();
 
 const app = express();
@@ -14,6 +15,69 @@ if (!OPENROUTER_KEY) {
     process.exit(1);
 }
 
+// ── Database ─────────────────────────────────────────────────────────
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+});
+
+async function initDB() {
+    const client = await pool.connect();
+    try {
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS mannequins (
+                id          TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                name        TEXT NOT NULL,
+                front_url   TEXT NOT NULL DEFAULT '',
+                back_url    TEXT DEFAULT '',
+                created_at  TIMESTAMPTZ DEFAULT now()
+            );
+
+            CREATE TABLE IF NOT EXISTS products (
+                id            TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                name          TEXT NOT NULL,
+                type          TEXT NOT NULL DEFAULT 'vetement',
+                environment   TEXT DEFAULT 'parquet',
+                mannequin_id  TEXT REFERENCES mannequins(id) ON DELETE SET NULL,
+                source_images JSONB DEFAULT '{}',
+                status        TEXT DEFAULT 'done',
+                created_at    TIMESTAMPTZ DEFAULT now()
+            );
+
+            CREATE TABLE IF NOT EXISTS generated_photos (
+                id          TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                product_id  TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                label       TEXT NOT NULL,
+                approved    BOOLEAN DEFAULT false,
+                created_at  TIMESTAMPTZ DEFAULT now()
+            );
+
+            CREATE TABLE IF NOT EXISTS photo_versions (
+                id         TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                photo_id   TEXT NOT NULL REFERENCES generated_photos(id) ON DELETE CASCADE,
+                url        TEXT NOT NULL,
+                prompt     TEXT,
+                version    INT NOT NULL DEFAULT 1,
+                created_at TIMESTAMPTZ DEFAULT now()
+            );
+
+            CREATE TABLE IF NOT EXISTS conversation_messages (
+                id            TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                photo_id      TEXT NOT NULL REFERENCES generated_photos(id) ON DELETE CASCADE,
+                role          TEXT NOT NULL,
+                text          TEXT,
+                image_url     TEXT,
+                version_label TEXT,
+                created_at    TIMESTAMPTZ DEFAULT now()
+            );
+        `);
+        console.log('✅ Database tables initialized');
+    } finally {
+        client.release();
+    }
+}
+
+// ── Middleware ────────────────────────────────────────────────────────
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'http://localhost:5173';
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json({ limit: '50mb' }));
@@ -48,9 +112,254 @@ async function downloadToBase64(imageUrl) {
     return buffer.toString('base64');
 }
 
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', model: 'black-forest-labs/flux.2-klein-4b (OpenRouter)' });
+// ── Health ───────────────────────────────────────────────────────────
+app.get('/api/health', async (req, res) => {
+    try {
+        await pool.query('SELECT 1');
+        res.json({ status: 'ok', db: 'connected' });
+    } catch {
+        res.json({ status: 'ok', db: 'disconnected' });
+    }
 });
+
+// ══════════════════════════════════════════════════════════════════════
+// ── MANNEQUINS CRUD ──────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+app.get('/api/mannequins', async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            'SELECT id, name, front_url AS "frontUrl", back_url AS "backUrl", created_at AS "createdAt" FROM mannequins ORDER BY created_at DESC'
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[Mannequins] GET error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/mannequins', async (req, res) => {
+    try {
+        const { name, frontUrl, backUrl } = req.body;
+        if (!name) return res.status(400).json({ error: 'Name is required' });
+
+        const { rows } = await pool.query(
+            'INSERT INTO mannequins (name, front_url, back_url) VALUES ($1, $2, $3) RETURNING id, name, front_url AS "frontUrl", back_url AS "backUrl", created_at AS "createdAt"',
+            [name, frontUrl || '', backUrl || '']
+        );
+        console.log(`[Mannequins] ✅ Created: ${rows[0].name}`);
+        res.status(201).json(rows[0]);
+    } catch (err) {
+        console.error('[Mannequins] POST error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/mannequins/:id', async (req, res) => {
+    try {
+        const { rowCount } = await pool.query('DELETE FROM mannequins WHERE id = $1', [req.params.id]);
+        if (rowCount === 0) return res.status(404).json({ error: 'Not found' });
+        console.log(`[Mannequins] 🗑️ Deleted: ${req.params.id}`);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[Mannequins] DELETE error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ── PRODUCTS CRUD ────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+app.get('/api/products', async (req, res) => {
+    try {
+        const { rows: products } = await pool.query(`
+            SELECT p.id, p.name, p.type, p.environment, p.mannequin_id AS "mannequinId",
+                   p.source_images AS "sourceImages", p.status, p.created_at AS "createdAt"
+            FROM products p ORDER BY p.created_at DESC
+        `);
+
+        // Fetch photos for each product
+        for (const product of products) {
+            const { rows: photos } = await pool.query(`
+                SELECT gp.id, gp.label, gp.approved,
+                       COALESCE(json_agg(json_build_object('url', pv.url, 'prompt', pv.prompt)
+                           ORDER BY pv.version) FILTER (WHERE pv.id IS NOT NULL), '[]') AS versions
+                FROM generated_photos gp
+                LEFT JOIN photo_versions pv ON pv.photo_id = gp.id
+                WHERE gp.product_id = $1
+                GROUP BY gp.id, gp.label, gp.approved, gp.created_at
+                ORDER BY gp.created_at
+            `, [product.id]);
+            product.generatedPhotos = photos;
+        }
+
+        res.json(products);
+    } catch (err) {
+        console.error('[Products] GET error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/products', async (req, res) => {
+    try {
+        const { name, type, environment, mannequinId, sourceImages } = req.body;
+        if (!name) return res.status(400).json({ error: 'Name is required' });
+
+        const { rows } = await pool.query(
+            `INSERT INTO products (name, type, environment, mannequin_id, source_images)
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING id, name, type, environment, mannequin_id AS "mannequinId",
+                       source_images AS "sourceImages", status, created_at AS "createdAt"`,
+            [name, type || 'vetement', environment || 'parquet', mannequinId || null, JSON.stringify(sourceImages || {})]
+        );
+        rows[0].generatedPhotos = [];
+        console.log(`[Products] ✅ Created: ${rows[0].name}`);
+        res.status(201).json(rows[0]);
+    } catch (err) {
+        console.error('[Products] POST error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/products/:id', async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT id, name, type, environment, mannequin_id AS "mannequinId",
+                    source_images AS "sourceImages", status, created_at AS "createdAt"
+             FROM products WHERE id = $1`, [req.params.id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
+
+        const product = rows[0];
+        const { rows: photos } = await pool.query(`
+            SELECT gp.id, gp.label, gp.approved,
+                   COALESCE(json_agg(json_build_object('url', pv.url, 'prompt', pv.prompt)
+                       ORDER BY pv.version) FILTER (WHERE pv.id IS NOT NULL), '[]') AS versions
+            FROM generated_photos gp
+            LEFT JOIN photo_versions pv ON pv.photo_id = gp.id
+            WHERE gp.product_id = $1
+            GROUP BY gp.id, gp.label, gp.approved, gp.created_at
+            ORDER BY gp.created_at
+        `, [req.params.id]);
+        product.generatedPhotos = photos;
+
+        res.json(product);
+    } catch (err) {
+        console.error('[Products] GET/:id error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/products/:id', async (req, res) => {
+    try {
+        const { rowCount } = await pool.query('DELETE FROM products WHERE id = $1', [req.params.id]);
+        if (rowCount === 0) return res.status(404).json({ error: 'Not found' });
+        console.log(`[Products] 🗑️ Deleted: ${req.params.id}`);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[Products] DELETE error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ── GENERATED PHOTOS ─────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+app.post('/api/products/:id/photos', async (req, res) => {
+    try {
+        const { label, imageUrl, prompt } = req.body;
+        if (!label || !imageUrl) return res.status(400).json({ error: 'label and imageUrl required' });
+
+        const { rows: photoRows } = await pool.query(
+            'INSERT INTO generated_photos (product_id, label) VALUES ($1, $2) RETURNING id, label, approved',
+            [req.params.id, label]
+        );
+        const photo = photoRows[0];
+
+        await pool.query(
+            'INSERT INTO photo_versions (photo_id, url, prompt, version) VALUES ($1, $2, $3, 1)',
+            [photo.id, imageUrl, prompt || null]
+        );
+
+        photo.versions = [{ url: imageUrl, prompt: prompt || null }];
+        console.log(`[Photos] ✅ Added: ${label} for product ${req.params.id}`);
+        res.status(201).json(photo);
+    } catch (err) {
+        console.error('[Photos] POST error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.patch('/api/photos/:id/approve', async (req, res) => {
+    try {
+        const approved = req.body.approved !== false;
+        const { rowCount } = await pool.query(
+            'UPDATE generated_photos SET approved = $1 WHERE id = $2',
+            [approved, req.params.id]
+        );
+        if (rowCount === 0) return res.status(404).json({ error: 'Not found' });
+        res.json({ success: true, approved });
+    } catch (err) {
+        console.error('[Photos] PATCH error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ── CONVERSATION ─────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+app.get('/api/photos/:id/conversation', async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT id, role, text, image_url AS "imageUrl", version_label AS "versionLabel", created_at AS "createdAt"
+             FROM conversation_messages WHERE photo_id = $1 ORDER BY created_at`,
+            [req.params.id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[Conversation] GET error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/photos/:id/conversation', async (req, res) => {
+    try {
+        const { role, text, imageUrl, versionLabel } = req.body;
+        if (!role) return res.status(400).json({ error: 'role is required' });
+
+        const { rows } = await pool.query(
+            `INSERT INTO conversation_messages (photo_id, role, text, image_url, version_label)
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING id, role, text, image_url AS "imageUrl", version_label AS "versionLabel", created_at AS "createdAt"`,
+            [req.params.id, role, text || null, imageUrl || null, versionLabel || null]
+        );
+
+        // If assistant message with image, also add a photo version
+        if (role === 'assistant' && imageUrl) {
+            const { rows: countRows } = await pool.query(
+                'SELECT COUNT(*) AS cnt FROM photo_versions WHERE photo_id = $1',
+                [req.params.id]
+            );
+            const nextVersion = parseInt(countRows[0].cnt) + 1;
+            await pool.query(
+                'INSERT INTO photo_versions (photo_id, url, prompt, version) VALUES ($1, $2, $3, $4)',
+                [req.params.id, imageUrl, text || null, nextVersion]
+            );
+        }
+
+        res.status(201).json(rows[0]);
+    } catch (err) {
+        console.error('[Conversation] POST error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ── EXISTING: GENERATION + SAVE-BATCH ────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
 
 app.post('/api/save-batch', async (req, res) => {
     try {
@@ -179,19 +488,18 @@ app.post('/api/generate/openrouter', async (req, res) => {
     }
 });
 
-// ── Serve built frontend (production / Docker) ──────────────────────
-const DIST_DIR = path.join(__dirname, 'dist');
-if (fs.existsSync(DIST_DIR)) {
-    app.use(express.static(DIST_DIR));
-    // SPA fallback: send index.html for any non-API route
-    app.get('*', (req, res) => {
-        res.sendFile(path.join(DIST_DIR, 'index.html'));
-    });
-    console.log('📦 Serving frontend from dist/');
-}
+// ── Frontend is served separately by Next.js ────────────────────────
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 Vinted AI Backend — http://localhost:${PORT}`);
-    console.log(`📡 Health: http://localhost:${PORT}/api/health`);
-    console.log(`💾 Output: ${OUTPUT_DIR}\n`);
-});
+// ── Start server ─────────────────────────────────────────────────────
+initDB()
+    .then(() => {
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`\n🚀 Vinted AI Backend — http://localhost:${PORT}`);
+            console.log(`📡 Health: http://localhost:${PORT}/api/health`);
+            console.log(`💾 Output: ${OUTPUT_DIR}\n`);
+        });
+    })
+    .catch((err) => {
+        console.error('❌ Failed to initialize database:', err.message);
+        process.exit(1);
+    });

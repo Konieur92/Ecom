@@ -11,7 +11,7 @@ const CLOTHING_LABELS = ['porte_face', 'porte_dos', 'plat_face', 'plat_dos']
 const GENERATION_COUNT = 1
 const MAX_RETRIES = 2
 
-async function withRetry<T>(fn: () => Promise<T>, signal: AbortSignal): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, _signal: AbortSignal): Promise<T> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       return await fn()
