@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { rateLimit } = require('express-rate-limit');
 const { Pool } = require('pg');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 require('dotenv').config();
 
 const app = express();
@@ -20,6 +21,56 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false },
 });
+
+// ── Cloudflare R2 ───────────────────────────────────────────────────
+const s3Client = new S3Client({
+    region: 'auto',
+    endpoint: process.env.R2_ENDPOINT,
+    credentials: {
+        accessKeyId: process.env.R2_ACCESS_KEY_ID,
+        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    },
+});
+
+async function uploadToR2(input, prefix = 'photo') {
+    if (!process.env.R2_BUCKET_NAME) return input; // Fallback to original if R2 not config
+
+    try {
+        let buffer;
+        let contentType = 'image/png';
+
+        if (typeof input === 'string' && input.startsWith('data:')) {
+            const matches = input.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
+            if (matches) {
+                contentType = matches[1];
+                buffer = Buffer.from(matches[2], 'base64');
+            }
+        } else if (typeof input === 'string' && input.startsWith('http')) {
+            const response = await fetch(input);
+            buffer = Buffer.from(await response.arrayBuffer());
+            contentType = response.headers.get('content-type') || 'image/png';
+        } else if (typeof input === 'string') {
+            buffer = Buffer.from(input, 'base64');
+        }
+
+        if (!buffer) return input;
+
+        const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.png`;
+        const command = new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: filename,
+            Body: buffer,
+            ContentType: contentType,
+        });
+
+        await s3Client.send(command);
+        const publicUrl = process.env.R2_PUBLIC_URL.replace(/\/$/, '');
+        return `${publicUrl}/${filename}`;
+    } catch (err) {
+        console.error('[R2] Upload error:', err.message);
+        return input; // Fallback to base64 if upload fails
+    }
+}
 
 async function initDB() {
     const client = await pool.connect();
@@ -296,6 +347,9 @@ app.post('/api/products/:id/photos', async (req, res) => {
         const { label, imageUrl, prompt } = req.body;
         if (!label || !imageUrl) return res.status(400).json({ error: 'label and imageUrl required' });
 
+        // Upload to R2 if it's a data URL
+        const finalUrl = await uploadToR2(imageUrl, `product_${req.params.id}`);
+
         const { rows: photoRows } = await pool.query(
             'INSERT INTO generated_photos (product_id, label) VALUES ($1, $2) RETURNING id, label, approved',
             [req.params.id, label]
@@ -304,11 +358,11 @@ app.post('/api/products/:id/photos', async (req, res) => {
 
         await pool.query(
             'INSERT INTO photo_versions (photo_id, url, prompt, version) VALUES ($1, $2, $3, 1)',
-            [photo.id, imageUrl, prompt || null]
+            [photo.id, finalUrl, prompt || null]
         );
 
-        photo.versions = [{ url: imageUrl, prompt: prompt || null }];
-        console.log(`[Photos] ✅ Added: ${label} for product ${req.params.id}`);
+        photo.versions = [{ url: finalUrl, prompt: prompt || null }];
+        console.log(`[Photos] ✅ Added: ${label} for product ${req.params.id} (Stored: ${finalUrl.startsWith('http') ? 'R2' : 'Base64'})`);
         res.status(201).json(photo);
     } catch (err) {
         console.error('[Photos] POST error:', err.message);
@@ -354,15 +408,18 @@ app.post('/api/photos/:id/conversation', async (req, res) => {
         const { role, text, imageUrl, versionLabel } = req.body;
         if (!role) return res.status(400).json({ error: 'role is required' });
 
+        // Upload to R2 if assistant provided an image
+        const finalUrl = imageUrl ? await uploadToR2(imageUrl, `edit_${req.params.id}`) : null;
+
         const { rows } = await pool.query(
             `INSERT INTO conversation_messages (photo_id, role, text, image_url, version_label)
              VALUES ($1, $2, $3, $4, $5)
              RETURNING id, role, text, image_url AS "imageUrl", version_label AS "versionLabel", created_at AS "createdAt"`,
-            [req.params.id, role, text || null, imageUrl || null, versionLabel || null]
+            [req.params.id, role, text || null, finalUrl, versionLabel || null]
         );
 
         // If assistant message with image, also add a photo version
-        if (role === 'assistant' && imageUrl) {
+        if (role === 'assistant' && finalUrl) {
             const { rows: countRows } = await pool.query(
                 'SELECT COUNT(*) AS cnt FROM photo_versions WHERE photo_id = $1',
                 [req.params.id]
@@ -370,7 +427,7 @@ app.post('/api/photos/:id/conversation', async (req, res) => {
             const nextVersion = parseInt(countRows[0].cnt) + 1;
             await pool.query(
                 'INSERT INTO photo_versions (photo_id, url, prompt, version) VALUES ($1, $2, $3, $4)',
-                [req.params.id, imageUrl, text || null, nextVersion]
+                [req.params.id, finalUrl, text || null, nextVersion]
             );
         }
 

@@ -94,7 +94,9 @@ Gemini models require extra params (`modalities`, `image_config`, `provider`) ad
 
 ### Image persistence
 
-Generated images are saved as data URLs in `photo_versions.url` in PostgreSQL. The legacy `/api/save-batch` endpoint (filesystem save to `output/{timestamp}/`) is still available but not used by the Studio.
+Images are no longer stored as large base64 data URLs in PostgreSQL. They are uploaded to **Cloudflare R2** (S3-compatible object storage) during the save process. Only the public R2 URLs are stored in the database.
+
+Legacy images (if any) might still be base64 in the DB, but all new generations will be R2 URLs.
 
 ## Environment
 
@@ -103,6 +105,13 @@ Copy `.env.example` to `.env` at project root:
 OPENROUTER=<your-openrouter-key>
 DATABASE_URL=<postgresql-connection-string>
 ALLOWED_ORIGIN=http://localhost:3000   # Next.js Studio port
+
+# Cloudflare R2
+R2_BUCKET_NAME=<bucket-name>
+R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=<access-key-id>
+R2_SECRET_ACCESS_KEY=<secret-access-key>
+R2_PUBLIC_URL=https://<public-url>.r2.dev
 ```
 
 For the Next.js frontend in Docker, `BACKEND_URL=http://backend:3001` is set in `docker-compose.yml`.
