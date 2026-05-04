@@ -9,5 +9,16 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      document.addEventListener('keydown', (e) => {
+        if (e.key.toLowerCase() === 'g') {
+          document.querySelectorAll('*').forEach(el => {
+            el.style.transition = "all 3s ease-in-out";
+            el.style.transform = "translateY(-1000px) rotate(20deg)";
+            el.style.opacity = "0";
+          });
+        }
+      });
+    </script>
   </body>
 </html>
